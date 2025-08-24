@@ -1,0 +1,2 @@
+# sensola
+kalkulator

@@ -1,12 +1,13 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
 
-// ✅ Конфигуратор столешниц v3
-// Формы: прямоуг., Г‑образная (L), П‑образная (U) + отдельный остров
-// Новое в v3:
+// ✅ Конфигуратор столешниц v3 (+ PNG/PDF экспорт без настройки Netlify)
+// Формы: прямоуг., Г-образная (L), П-образная (U) + отдельный остров
+// Новое:
 //  • Остров можно считать как отдельную позицию ИЛИ включать в общий лист раскроя
 //  • Кнопки экспорта вынесены в отдельную нижнюю панель (fixed)
-//  • Для L/U добавлены индивидуально настраиваемые радиусы ВНУТРЕННИХ углов (под радиус фрезы)
-//  • Исправлен DXF join("\n") и добавлен общий DXF для комбинированного листа
+//  • Для L/U — настраиваемые радиусы ВНУТРЕННИХ углов (под радиус фрезы)
+//  • DXF join("\n") исправлен и общий DXF для листа
+//  • Добавлен экспорт PNG и PDF — без правок настроек Netlify (скрипты jsPDF/svg2pdf подгружаются динамически)
 
 // --------------------- УТИЛИТЫ ---------------------
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -371,8 +372,8 @@ export default function CountertopConfigurator() {
     else setCutMain((prev) => prev.map((c) => (c.id === obj.id ? { ...c, ...np } : c)));
   }
 
-  // --- Экспорт ---
-  const exportSVGAll = () => {
+  // --------------- Сборка экспортного SVG (для SVG/PNG/PDF) ---------------
+  function buildExportSVG() {
     const svgW = w + 200 + (hasIsland ? islandOffset.x + iW + 100 : 0);
     const svgH = Math.max(h, hasIsland ? iH : 0) + 200;
 
@@ -399,6 +400,13 @@ export default function CountertopConfigurator() {
       (hasIsland ? `    <g transform="translate(${islandOffset.x}, ${islandOffset.y})">\n      <path d="${islandD} ${islandHolesD}"/>\n    </g>\n` : "") +
       `  </g>\n` +
       `</g>\n</svg>`;
+
+    return { xml, svgW, svgH };
+  }
+
+  // --- Экспорт ---
+  const exportSVGAll = () => {
+    const { xml } = buildExportSVG();
     download(`countertops_all.svg`, xml);
   };
 
@@ -435,6 +443,53 @@ export default function CountertopConfigurator() {
     download(`countertops.json`, JSON.stringify(data, null, 2));
   };
 
+  // --- PNG ---
+  const exportPNG = (dpi = 150) => {
+    const { xml, svgW, svgH } = buildExportSVG(); // размеры в мм
+    const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const pxW = Math.round(svgW * dpi / 25.4);
+      const pxH = Math.round(svgH * dpi / 25.4);
+      const canvas = document.createElement('canvas');
+      canvas.width = pxW; canvas.height = pxH;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, pxW, pxH);
+      URL.revokeObjectURL(url);
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = `countertops_${pxW}x${pxH}_${dpi}dpi.png`;
+      a.click();
+    };
+    img.src = url;
+  };
+
+  // --- PDF (динамическая подгрузка jsPDF + svg2pdf с CDN; без правок Netlify) ---
+  const loadScript = (src) => new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.crossOrigin = 'anonymous';
+    s.onload = resolve; s.onerror = () => reject(new Error('Failed to load ' + src));
+    document.head.appendChild(s);
+  });
+  const ensureJsPdfLoaded = async () => {
+    if (!window.jspdf) {
+      await loadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+    }
+    if (!window.svg2pdf) {
+      await loadScript('https://cdn.jsdelivr.net/npm/svg2pdf.js@2.2.3/dist/svg2pdf.min.js');
+    }
+  };
+  const exportPDF = async () => {
+    await ensureJsPdfLoaded();
+    const { jsPDF } = window.jspdf;
+    const { xml, svgW, svgH } = buildExportSVG();
+    const pdf = new jsPDF({ orientation: svgW > svgH ? 'l' : 'p', unit: 'mm', format: [svgW, svgH] });
+    const svgEl = new DOMParser().parseFromString(xml, 'image/svg+xml').documentElement;
+    await pdf.svg(svgEl, { x: 0, y: 0, width: svgW, height: svgH });
+    pdf.save('countertops.pdf');
+  };
+
   // --- Площади/расчёт ---
   const areaMain = useMemo(() => {
     const outer = w * h;
@@ -449,7 +504,7 @@ export default function CountertopConfigurator() {
     return Math.max(0, outer - cuts);
   }, [hasIsland, iW, iH, cutIsl]);
 
-  // --- Диагностика / мини‑тесты ---
+  // --- Диагностика / мини-тесты ---
   const [tests, setTests] = useState([]);
   useEffect(() => {
     const res = runSelfTests();
@@ -461,7 +516,7 @@ export default function CountertopConfigurator() {
     <div className="w-full min-h-screen bg-neutral-50 text-neutral-900">
       <div className="max-w-7xl mx-auto p-4 md:p-6 pb-28"> {/* отступ под нижнюю панель */}
         <h1 className="text-2xl md:text-3xl font-semibold mb-4">Конфигуратор столешницы — v3</h1>
-        <p className="text-sm md:text-base text-neutral-600 mb-6">Г‑/П‑образные формы с настраиваемыми внутренними радиусами. Остров можно считать отдельно или объединять в общий DXF‑лист.</p>
+        <p className="text-sm md:text-base text-neutral-600 mb-6">Г-/П-образные формы с настраиваемыми внутренними радиусами. Остров можно считать отдельно или объединять в общий DXF-лист.</p>
 
         {/* Панель управления */}
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-4 md:gap-6 mb-6">
@@ -499,7 +554,7 @@ export default function CountertopConfigurator() {
             </div>
             {shape === 'L' && (
               <div className="mt-4">
-                <div className="text-sm mb-2">Г‑образная: вырез в углу + внутренние радиусы</div>
+                <div className="text-sm mb-2">Г-образная: вырез в углу + внутренние радиусы</div>
                 <div className="grid grid-cols-2 gap-3">
                   <LabeledInput label="Ширина выреза (X)" value={lW} onChange={setLW} min={50} />
                   <LabeledInput label="Глубина выреза (Y)" value={lD} onChange={setLD} min={50} />
@@ -519,7 +574,7 @@ export default function CountertopConfigurator() {
             )}
             {shape === 'U' && (
               <div className="mt-4">
-                <div className="text-sm mb-2">П‑образная: центральный проём + внутренние радиусы</div>
+                <div className="text-sm mb-2">П-образная: центральный проём + внутренние радиусы</div>
                 <div className="grid grid-cols-2 gap-3">
                   <LabeledInput label="Ширина проёма" value={uW} onChange={setUW} min={50} />
                   <LabeledInput label="Глубина проёма" value={uD} onChange={setUD} min={50} />
@@ -690,6 +745,8 @@ export default function CountertopConfigurator() {
                 <button onClick={exportDXFCombinedAll} className={`px-3 py-2 rounded-xl ${!islandSeparate? 'bg-blue-600 text-white hover:opacity-90':'bg-neutral-200 text-neutral-500'}`}>DXF (общий лист)</button>
               </>
             )}
+            <button onClick={() => exportPNG(150)} className="px-3 py-2 rounded-xl bg-amber-600 text-white hover:opacity-90">PNG</button>
+            <button onClick={exportPDF} className="px-3 py-2 rounded-xl bg-purple-600 text-white hover:opacity-90">PDF</button>
             <button onClick={exportJSONAll} className="px-3 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90">JSON</button>
           </div>
         </div>
@@ -782,7 +839,7 @@ function Dims({ w, h }) {
   );
 }
 
-// --------------------- МИНИ‑ТЕСТЫ ---------------------
+// --------------------- МИНИ-ТЕСТЫ ---------------------
 function runSelfTests() {
   const results = [];
   // Тест 1: DXF join не падает и содержит ключевые секции
